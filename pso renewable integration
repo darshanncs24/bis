@@ -1,0 +1,112 @@
+import numpy as np
+
+np.random.seed(42)
+HOURS = 24
+
+
+load_demand = np.array([30, 28, 25, 25, 30, 45, 65, 80, 90, 100, 110, 115, 
+                        120, 110, 95, 85, 90, 110, 125, 130, 115, 85, 60, 40])
+
+solar_gen = np.array([0, 0, 0, 0, 0, 5, 20, 45, 65, 80, 85, 90, 
+                      85, 75, 60, 40, 15, 2, 0, 0, 0, 0, 0, 0])
+
+wind_gen = np.array([20, 22, 25, 24, 20, 18, 15, 12, 15, 18, 20, 22, 
+                     25, 23, 20, 18, 19, 22, 24, 25, 23, 21, 20, 19])
+
+grid_tariff = np.array([0.10, 0.10, 0.10, 0.10, 0.10, 0.15, 0.22, 0.25, 0.25, 0.15, 0.15, 0.15,
+                        0.15, 0.15, 0.15, 0.15, 0.22, 0.28, 0.28, 0.28, 0.22, 0.15, 0.10, 0.10])
+
+BATTERY_CAPACITY = 150.0  
+INITIAL_SOC = 75.0        
+SOC_MIN = 30.0           
+SOC_MAX = 135.0           
+MAX_P_BAT = 30.0          
+
+def compute_fitness(battery_schedule):
+    """
+    Evaluates a single schedule.
+    battery_schedule: 24-element array representing battery action (kW).
+    Positive = Charging, Negative = Discharging.
+    """
+    cost = 0.0
+    current_soc = INITIAL_SOC
+    penalty = 0.0
+    
+    for t in range(HOURS):
+        p_bat = battery_schedule[t]
+        
+        p_bat = np.clip(p_bat, -MAX_P_BAT, MAX_P_BAT)
+        
+        next_soc = current_soc + p_bat  
+        if next_soc < SOC_MIN:
+            penalty += (SOC_MIN - next_soc) * 10.0   
+            p_bat = SOC_MIN - current_soc            
+            next_soc = SOC_MIN
+        elif next_soc > SOC_MAX:
+            penalty += (next_soc - SOC_MAX) * 10.0
+            p_bat = SOC_MAX - current_soc
+            next_soc = SOC_MAX
+            
+        current_soc = next_soc
+        
+        p_grid = load_demand[t] - solar_gen[t] - wind_gen[t] + p_bat
+        
+        if p_grid < 0:
+            p_grid = 0 
+            
+        cost += p_grid * grid_tariff[t]
+        
+    return cost + penalty
+
+def pso_optimize(num_particles=50, max_iter=200):
+    w = 0.7   
+    c1 = 1.5   
+    c2 = 1.5  
+    
+    
+    position = np.random.uniform(-MAX_P_BAT, MAX_P_BAT, (num_particles, HOURS))
+    velocity = np.zeros((num_particles, HOURS))
+    
+    p_best_position = np.copy(position)
+    p_best_fitness = np.array([compute_fitness(p) for p in position])
+    
+    g_best_index = np.argmin(p_best_fitness)
+    g_best_position = np.copy(p_best_position[g_best_index])
+    g_best_fitness = p_best_fitness[g_best_index]
+    
+    for iteration in range(max_iter):
+        for i in range(num_particles):
+            r1, r2 = np.random.rand(HOURS), np.random.rand(HOURS)
+            velocity[i] = (w * velocity[i] + 
+                           c1 * r1 * (p_best_position[i] - position[i]) + 
+                           c2 * r2 * (g_best_position - position[i]))
+            
+            velocity[i] = np.clip(velocity[i], -MAX_P_BAT/2, MAX_P_BAT/2)
+            
+            position[i] += velocity[i]
+            position[i] = np.clip(position[i], -MAX_P_BAT, MAX_P_BAT)
+            
+            current_fitness = compute_fitness(position[i])
+            
+            if current_fitness < p_best_fitness[i]:
+                p_best_fitness[i] = current_fitness
+                p_best_position[i] = np.copy(position[i])
+                
+                if current_fitness < g_best_fitness:
+                    g_best_fitness = current_fitness
+                    g_best_position = np.copy(position[i])
+                    
+        if (iteration + 1) % 50 == 0:
+            print(f"Iteration {iteration+1}/{max_iter} - Best Grid Cost: ${g_best_fitness:.2f}")
+            
+    return g_best_position, g_best_fitness
+
+best_schedule, min_cost = pso_optimize(num_particles=60, max_iter=250)
+
+print("\n=== OPTIMIZATION RESULT ===")
+print(f"Optimized Minimum Grid Cost: ${min_cost:.2f}")
+print("\nHour | Load(kW) | Solar(kW) | Wind(kW) | Battery Action (kW) | Tariff($)")
+print("-" * 70)
+for h in range(HOURS):
+    action = "Charge" if best_schedule[h] > 0 else "Discharge"
+    print(f"{h:02d}   | {load_demand[h]:<8} | {solar_gen[h]:<9} | {wind_gen[h]:<8} | {best_schedule[h]:>6.2f} ({action:^9}) | ${grid_tariff[h]:.2f}")
